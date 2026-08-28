@@ -4,7 +4,7 @@ from utils.config import get_config, get_userData
 from utils import norm
 from core.msg_builder import build_message, build_message_with_openai
 from core.browser import get_browser
-from playwright.sync_api import Response
+from playwright.sync_api import Response, TimeoutError as PlaywrightTimeoutError
 import time
 
 config = get_config()
@@ -16,6 +16,98 @@ CONVERSATION_ITEM_SELECTOR = ".conversationConversationItemwrapper"
 CONVERSATION_TITLE_SELECTOR = ".conversationConversationItemtitle"
 CONVERSATION_LIST_SELECTOR = ".conversationConversationListwrapper"
 CHAT_EDITOR_SELECTOR = ".messageEditorimChatEditorContainer"
+CHAT_EDITOR_INPUT_SELECTOR = f"{CHAT_EDITOR_SELECTOR} [contenteditable='true']"
+MESSAGE_DELIVERY_TIMEOUT_MS = 10000
+
+MESSAGE_COUNT_SCRIPT = r"""
+({ editorSelector, message }) => {
+    const editor = document.querySelector(editorSelector);
+    const normalizedMessage = message.replace(/\r\n/g, "\n").trim();
+
+    return Array.from(document.querySelectorAll("div, span, p")).filter((element) => {
+        if (editor && editor.contains(element)) {
+            return false;
+        }
+        if ((element.innerText || "").trim() !== normalizedMessage) {
+            return false;
+        }
+        return !Array.from(element.children).some(
+            (child) => (child.innerText || "").trim() === normalizedMessage
+        );
+    }).length;
+}
+"""
+
+MESSAGE_DELIVERED_SCRIPT = r"""
+({ editorSelector, message, countBefore }) => {
+    const editor = document.querySelector(editorSelector);
+    const editorText = editor
+        ? (editor.innerText || editor.textContent || "").replace(/[\u200B-\u200D\uFEFF]/g, "").trim()
+        : null;
+    if (!editor || editorText !== "") {
+        return false;
+    }
+
+    const normalizedMessage = message.replace(/\r\n/g, "\n").trim();
+    const renderedCount = Array.from(document.querySelectorAll("div, span, p")).filter((element) => {
+        if (editor.contains(element)) {
+            return false;
+        }
+        if ((element.innerText || "").trim() !== normalizedMessage) {
+            return false;
+        }
+        return !Array.from(element.children).some(
+            (child) => (child.innerText || "").trim() === normalizedMessage
+        );
+    }).length;
+
+    return renderedCount > countBefore;
+}
+"""
+
+
+class MessageDeliveryError(RuntimeError):
+    pass
+
+
+def send_message_verified(page, chat_input, message, timeout=MESSAGE_DELIVERY_TIMEOUT_MS):
+    """Press Enter once and require a newly rendered message before succeeding."""
+    message_lines = message.split("\\n")
+    rendered_message = "\n".join(message_lines)
+    count_before = page.evaluate(
+        MESSAGE_COUNT_SCRIPT,
+        {"editorSelector": CHAT_EDITOR_INPUT_SELECTOR, "message": rendered_message},
+    )
+
+    for index, line in enumerate(message_lines):
+        chat_input.type(line)
+        if index < len(message_lines) - 1:
+            chat_input.press("Shift+Enter")
+
+    chat_input.press("Enter")
+
+    try:
+        page.wait_for_function(
+            MESSAGE_DELIVERED_SCRIPT,
+            arg={
+                "editorSelector": CHAT_EDITOR_INPUT_SELECTOR,
+                "message": rendered_message,
+                "countBefore": count_before,
+            },
+            timeout=timeout,
+        )
+    except PlaywrightTimeoutError as error:
+        raise MessageDeliveryError(
+            "Douyin did not render a new outgoing message after one send attempt"
+        ) from error
+
+
+def ensure_all_targets_sent(targets, sent_targets):
+    missing_count = len(set(targets) - set(sent_targets))
+    if missing_count:
+        raise MessageDeliveryError(
+            f"Message delivery was not verified for {missing_count} configured target(s)"
+        )
 
 
 def handle_response(response: Response):
@@ -244,27 +336,21 @@ def do_user_task(browser, username, cookies, targets):
     time.sleep(5)  # 等待5秒让过可能存在的弹窗
 
     logger.debug(f"账号 {username} 开始发送消息")
+    sent_targets = set()
     # 滚动并选择用户
-    for username in scroll_and_select_user(page, username, targets):
-        logger.debug(f"账号 {username} 已选中好友 {username} 发送消息")
+    for target_symbol in scroll_and_select_user(page, username, targets):
+        logger.debug(f"账号 {username} 已选中目标好友发送消息")
         # 等待聊天输入框元素加载完成，使用更稳定的属性选择器
-        chat_input_selector = CHAT_EDITOR_SELECTOR
+        chat_input_selector = CHAT_EDITOR_INPUT_SELECTOR
         page.wait_for_selector(chat_input_selector, timeout=config["browserTimeout"])
         chat_input = page.locator(chat_input_selector)
 
-        # 在 chat-input-dccKiL 中输入内容
         message = build_message()
-        for line in message.split("\\n"):
-            chat_input.type(line)  # 输入每一行
-            # 如果不是最后一行，模拟 Shift+Enter 插入换行
-            if line != message.split("\\n")[-1]:
-                chat_input.press("Shift+Enter")  # 模拟 Shift+Enter 插入换行
+        send_message_verified(page, chat_input, message)
+        sent_targets.add(target_symbol)
+        logger.info("消息发送并验证成功")
 
-        logger.debug(f"账号 {username} 准备发送消息给好友 {username}：\n\t{message}")
-        logger.debug(f"账号 {username} 给好友 {username} 发送消息完成")
-        # 模拟按下回车键发送消息
-        chat_input.press("Enter")
-        time.sleep(2)  # 发送完等待一会儿
+    ensure_all_targets_sent(targets, sent_targets)
 
     context.close()  # 任务完成后关闭上下文
 
