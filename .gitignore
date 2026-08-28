@@ -6,5 +6,9 @@ logs/
 .DS_Store
 usersData.json
 .env
+*.env
+config/
+*.pem
+*.key
 tasks.json
 cookies_*.json

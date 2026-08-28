@@ -5,7 +5,7 @@ import logging
 from utils.logger import setup_logger
 from utils import norm
 
-logger = setup_logger(level=logging.DEBUG)
+logger = setup_logger(level=logging.INFO)
 
 """
 是否启用调试模式
@@ -60,7 +60,7 @@ def get_config():
             os.getenv("FRIEND_LIST_WAIT_TIME", "2000")
         ),  # 好友列表加载超时时间，单位毫秒
         "taskRetryTimes": int(os.getenv("TASK_RETRY_TIMES", "3")),  # 任务重试次数
-        "logLevel": os.getenv("LOG_LEVEL", "DEBUG"),  # 日志级别
+        "logLevel": os.getenv("LOG_LEVEL", "INFO"),  # 日志级别
     }
 
     return config

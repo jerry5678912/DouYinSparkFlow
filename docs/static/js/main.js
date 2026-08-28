@@ -1,4 +1,4 @@
-const { createApp, ref, reactive, computed } = Vue;
+const { createApp, ref, reactive, computed, h } = Vue;
 const app = createApp({
   setup() {
     const message = ref("Hello vue!");
@@ -127,26 +127,27 @@ const app = createApp({
     };
 
     const openEnvDetails = (name, value) => {
-      console.log(
-        "openEnvDetails called with name:",
-        name,
-        "value:",
-        value,
-        typeof value
-      );
       if (typeof value === "object") {
         value = JSON.stringify(value, null, 2);
-        console.log("value is object, stringify it:", value);
       }
 
       ElementPlus.ElMessageBox.alert(
-        "<div style='text-align: left; white-space: pre-wrap; word-break: break-all; width: 400px; max-height: 200px; overflow: auto;'>" +
-          value +
-          "</div>",
+        h(
+          "div",
+          {
+            style: {
+              textAlign: "left",
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-all",
+              width: "400px",
+              maxHeight: "200px",
+              overflow: "auto",
+            },
+          },
+          String(value)
+        ),
         `${name} 详情`,
-        {
-          dangerouslyUseHTMLString: true,
-        }
+        {}
       );
     };
 
