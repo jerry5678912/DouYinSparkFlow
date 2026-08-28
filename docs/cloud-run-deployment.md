@@ -38,8 +38,7 @@ gcloud artifacts repositories create douyin-spark-flow \
   --location=REGION
 
 gcloud builds submit \
-  --tag REGION-docker.pkg.dev/PROJECT_ID/douyin-spark-flow/app:latest \
-  --file=Dockerfile .
+  --tag REGION-docker.pkg.dev/PROJECT_ID/douyin-spark-flow/app:latest .
 ```
 
 The image entrypoint is already `python main.py`; do not use the old cron
