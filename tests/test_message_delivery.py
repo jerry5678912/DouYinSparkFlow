@@ -8,8 +8,11 @@ from core.tasks import (
     MESSAGE_COUNT_SCRIPT,
     MESSAGE_DELIVERED_SCRIPT,
     OUTGOING_MESSAGE_TEXT_SELECTOR,
+    POST_SEND_SETTLE_MS,
+    TRUST_LOGIN_CANCEL_SELECTOR,
     MessageDeliveryError,
     activate_conversation,
+    dismiss_trust_login_dialog,
     ensure_all_targets_sent,
     send_message_verified,
 )
@@ -61,6 +64,27 @@ class FakeSendButton:
 
     def click(self):
         self.click_count += 1
+
+
+class FakeTrustLoginCancel:
+    def __init__(self, error=None):
+        self.error = error
+        self.click_timeouts = []
+
+    def click(self, timeout):
+        self.click_timeouts.append(timeout)
+        if self.error:
+            raise self.error
+
+
+class FakeTrustLoginPage:
+    def __init__(self, error=None):
+        self.cancel = FakeTrustLoginCancel(error=error)
+        self.located = []
+
+    def locator(self, selector):
+        self.located.append(selector)
+        return self.cancel
 
 
 class FakeConversationElement:
@@ -126,6 +150,7 @@ class MessageDeliveryTests(unittest.TestCase):
             CHAT_EDITOR_INPUT_SELECTOR,
         )
         self.assertEqual(page.wait_arguments["timeout"], 4321)
+        self.assertEqual(page.timeout_waits, [POST_SEND_SETTLE_MS])
 
     def test_unverified_send_fails_without_pressing_enter_twice(self):
         page = FakePage(delivery_error=PlaywrightTimeoutError("not rendered"))
@@ -136,6 +161,20 @@ class MessageDeliveryTests(unittest.TestCase):
 
         self.assertEqual(chat_input.pressed, ["Enter"])
         self.assertEqual(page.send_button.click_count, 0)
+        self.assertEqual(page.timeout_waits, [])
+
+    def test_trust_login_prompt_is_cancelled_when_present(self):
+        page = FakeTrustLoginPage()
+
+        self.assertTrue(dismiss_trust_login_dialog(page, timeout=2345))
+
+        self.assertEqual(page.located, [TRUST_LOGIN_CANCEL_SELECTOR])
+        self.assertEqual(page.cancel.click_timeouts, [2345])
+
+    def test_missing_trust_login_prompt_is_safe(self):
+        page = FakeTrustLoginPage(error=PlaywrightTimeoutError("not visible"))
+
+        self.assertFalse(dismiss_trust_login_dialog(page, timeout=100))
 
     def test_missing_targets_make_the_task_fail(self):
         with self.assertRaises(MessageDeliveryError):

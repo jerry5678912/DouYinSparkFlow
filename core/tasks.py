@@ -25,6 +25,9 @@ CONVERSATION_SELECTED_SCRIPT = """
 """
 CONVERSATION_SETTLE_MS = 1000
 MESSAGE_DELIVERY_TIMEOUT_MS = 10000
+POST_SEND_SETTLE_MS = 3000
+TRUST_LOGIN_CANCEL_SELECTOR = ".trust-login-dialog-button-cancel"
+TRUST_LOGIN_DIALOG_TIMEOUT_MS = 3000
 
 MESSAGE_COUNT_SCRIPT = r"""
 ({ messageSelector, message }) => {
@@ -94,6 +97,8 @@ def send_message_verified(page, chat_input, message, timeout=MESSAGE_DELIVERY_TI
         raise MessageDeliveryError(
             "Douyin did not render a new outgoing message after one send attempt"
         ) from error
+
+    page.wait_for_timeout(POST_SEND_SETTLE_MS)
 
 
 def activate_conversation(page, element, timeout):
@@ -179,6 +184,15 @@ def open_chat_page(page):
         CONVERSATION_LIST_SELECTOR,
         timeout=config["browserTimeout"],
     )
+
+
+def dismiss_trust_login_dialog(page, timeout=TRUST_LOGIN_DIALOG_TIMEOUT_MS):
+    """Cancel Douyin's temporary save-login-information prompt when it appears."""
+    try:
+        page.locator(TRUST_LOGIN_CANCEL_SELECTOR).click(timeout=timeout)
+        return True
+    except PlaywrightTimeoutError:
+        return False
 
 def checkTargetName(targetName, targets):
     """检查targetName是否为目标
@@ -347,8 +361,7 @@ def do_user_task(browser, username, cookies, targets):
 
     # 打开抖音网页聊天页面
     open_chat_page(page)
-
-    time.sleep(5)  # 等待5秒让过可能存在的弹窗
+    dismiss_trust_login_dialog(page)
 
     logger.debug(f"账号 {username} 开始发送消息")
     sent_targets = set()
