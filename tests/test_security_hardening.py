@@ -23,6 +23,8 @@ class SecurityHardeningTests(unittest.TestCase):
         self.assertIn("*.env", ignored_patterns)
         self.assertIn("*.pem", ignored_patterns)
         self.assertIn("*.key", ignored_patterns)
+        self.assertIn("wz.json", ignored_patterns)
+        self.assertIn("gsy.json", ignored_patterns)
 
 
 if __name__ == "__main__":

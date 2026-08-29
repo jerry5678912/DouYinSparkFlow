@@ -5,6 +5,8 @@ chrome/
 logs/
 .DS_Store
 usersData.json
+wz.json
+gsy.json
 .env
 *.env
 config/

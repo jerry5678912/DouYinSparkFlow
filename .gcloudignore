@@ -8,6 +8,8 @@ logs/
 *.env
 tasks.json
 cookies_*.json
+wz.json
+gsy.json
 __pycache__/
 **/__pycache__/
 *.pyc

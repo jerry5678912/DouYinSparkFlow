@@ -5,6 +5,8 @@
 config/
 tasks.json
 cookies_*.json
+wz.json
+gsy.json
 .venv/
 chrome/
 logs/
