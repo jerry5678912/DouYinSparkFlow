@@ -1,9 +1,44 @@
+import json
 import logging
 import os
+from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 
-LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s"
 LOG_FILE = "logs/app.log"
+RELIABILITY_FIELDS = {
+    "run_id",
+    "account",
+    "account_count",
+    "attempt",
+    "attempts",
+    "target_count",
+    "remaining_count",
+    "verified_count",
+    "duration_ms",
+    "outcome",
+    "error_type",
+}
+
+
+class JsonFormatter(logging.Formatter):
+    """Emit bounded structured logs that Cloud Logging can query safely."""
+
+    def format(self, record):
+        payload = {
+            "timestamp": datetime.fromtimestamp(
+                record.created,
+                tz=timezone.utc,
+            ).isoformat(),
+            "severity": record.levelname,
+            "logger": record.name,
+            "event": getattr(record, "event", "log_message"),
+            "message": record.getMessage(),
+            "source": f"{record.filename}:{record.lineno}",
+        }
+        for field in RELIABILITY_FIELDS:
+            if hasattr(record, field):
+                payload[field] = getattr(record, field)
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
 def resolve_log_level(level):
@@ -31,7 +66,7 @@ def setup_logger(name="app", level="Info"):
     logger.setLevel(resolved_level)
     logger.propagate = False
 
-    formatter = logging.Formatter(LOG_FORMAT)
+    formatter = JsonFormatter()
 
     if not logger.handlers:
         console_handler = logging.StreamHandler()

@@ -1,4 +1,6 @@
-import traceback
+import os
+import re
+import uuid
 from utils.logger import setup_logger
 from utils.config import get_config, get_userData
 from utils import norm
@@ -31,6 +33,7 @@ TRUST_LOGIN_CANCEL_SELECTOR = ".trust-login-dialog-button-cancel"
 TRUST_LOGIN_DIALOG_TIMEOUT_MS = 3000
 TARGET_IDENTITY_WAIT_TIMEOUT_MS = 5000
 TARGET_IDENTITY_POLL_MS = 100
+CLOUD_RUN_EXECUTION_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$")
 
 MESSAGE_COUNT_SCRIPT = r"""
 ({ messageSelector, message }) => {
@@ -80,12 +83,21 @@ class MessageDeliveryError(RuntimeError):
     pass
 
 
+def create_run_id():
+    """Use a validated Cloud Run execution name or generate a local correlation ID."""
+    execution_name = os.getenv("CLOUD_RUN_EXECUTION", "")
+    if CLOUD_RUN_EXECUTION_PATTERN.fullmatch(execution_name):
+        return execution_name
+    return uuid.uuid4().hex
+
+
 def send_message_verified(
     page,
     chat_input,
     message,
     timeout=MESSAGE_DELIVERY_TIMEOUT_MS,
     verification_attempts=MESSAGE_DELIVERY_VERIFICATION_ATTEMPTS,
+    run_id=None,
 ):
     """Press Enter once and require a newly rendered message before succeeding."""
     message_lines = message.split("\\n")
@@ -126,7 +138,13 @@ def send_message_verified(
                     "Douyin did not render a new outgoing message after one send attempt"
                 ) from error
             logger.warning(
-                "Delivery confirmation is delayed; observing again without resending"
+                "Delivery confirmation is delayed; observing again without resending",
+                extra={
+                    "event": "message_delivery_confirmation_delayed",
+                    "run_id": run_id,
+                    "attempt": attempt + 1,
+                    "attempts": attempts,
+                },
             )
 
     page.wait_for_timeout(POST_SEND_SETTLE_MS)
@@ -172,11 +190,14 @@ def handle_response(response: Response):
                 nickname = norm(item.get("nickname"))  # 昵称
                 remark_name = norm(item.get("remark_name", nickname))  #  备注名，如果没有则使用昵称
                 userIDDict[remark_name] = [short_id, unique_id, sec_uid, nickname, remark_name]
-        except Exception as e:
-            tb = traceback.extract_tb(e.__traceback__)
-            last = tb[-1]
-            print(f"解析响应失败: {e}")
-            print(f"文件: {last.filename}, 行号: {last.lineno}, 函数: {last.name}")
+        except Exception as error:
+            logger.warning(
+                "Douyin user information response could not be parsed",
+                extra={
+                    "event": "target_identity_response_parse_failed",
+                    "error_type": type(error).__name__,
+                },
+            )
 
 
 def retry_operation(name, operation, retries=3, delay=2, *args, **kwargs):
@@ -192,12 +213,28 @@ def retry_operation(name, operation, retries=3, delay=2, *args, **kwargs):
     for attempt in range(retries):
         try:
             return operation(*args, **kwargs)
-        except Exception as e:
+        except Exception as error:
             if attempt < retries - 1:
-                logger.warning(f"{name} 失败，正在重试第 {attempt + 1} 次，错误：{e}")
+                logger.warning(
+                    "Browser operation failed and will be retried",
+                    extra={
+                        "event": "browser_operation_retry",
+                        "attempt": attempt + 1,
+                        "attempts": retries,
+                        "error_type": type(error).__name__,
+                    },
+                )
                 time.sleep(delay)
             else:
-                logger.error(f"{name} 失败，已达到最大重试次数，错误：{e}")
+                logger.error(
+                    "Browser operation exhausted its retries",
+                    extra={
+                        "event": "browser_operation_failed",
+                        "attempt": attempt + 1,
+                        "attempts": retries,
+                        "error_type": type(error).__name__,
+                    },
+                )
                 raise
 
 
@@ -345,8 +382,15 @@ def scroll_and_select_user(page, account_label, targets):
                         logger.debug(f"{account_label} 所有目标好友均已找到，停止搜索")
                         return
                     break
-            except Exception as e:
-                traceback.print_exc()
+            except Exception as error:
+                logger.warning(
+                    "A conversation candidate could not be inspected",
+                    extra={
+                        "event": "conversation_candidate_scan_failed",
+                        "account": account_label,
+                        "error_type": type(error).__name__,
+                    },
+                )
         else:
             # [修复] 检查本轮是否有新好友被发现
             new_found = len(found_targets) > prev_found_count
@@ -427,6 +471,7 @@ def send_targets_with_recovery(
     account_label,
     targets,
     max_search_attempts=None,
+    run_id=None,
 ):
     """Send once per target, retrying only discovery of targets still missing."""
     configured_attempts = max_search_attempts or config["taskRetryTimes"]
@@ -441,7 +486,15 @@ def send_targets_with_recovery(
         if search_attempt > 1:
             logger.warning(
                 f"{account_label} 将重新加载聊天列表查找剩余目标，"
-                f"第 {search_attempt}/{search_attempts} 次"
+                f"第 {search_attempt}/{search_attempts} 次",
+                extra={
+                    "event": "target_discovery_retry",
+                    "run_id": run_id,
+                    "account": account_label,
+                    "attempt": search_attempt,
+                    "attempts": search_attempts,
+                    "remaining_count": len(remaining_targets),
+                },
             )
             prepare_chat_page(page, account_label, remaining_targets)
 
@@ -461,15 +514,24 @@ def send_targets_with_recovery(
             chat_input = page.locator(CHAT_EDITOR_INPUT_SELECTOR)
 
             message = build_message()
-            send_message_verified(page, chat_input, message)
+            send_message_verified(page, chat_input, message, run_id=run_id)
             sent_targets.add(target_symbol)
-            logger.info("消息发送并验证成功")
+            logger.info(
+                "Message send was verified",
+                extra={
+                    "event": "message_send_verified",
+                    "run_id": run_id,
+                    "account": account_label,
+                    "verified_count": len(sent_targets),
+                    "target_count": len(targets),
+                },
+            )
 
     ensure_all_targets_sent(targets, sent_targets)
     return sent_targets
 
 
-def do_user_task(browser, account_label, cookies, targets):
+def do_user_task(browser, account_label, cookies, targets, run_id=None):
     userIDDict.clear()
     context = browser.new_context()  # 每个任务使用独立的上下文
     context.set_default_navigation_timeout(
@@ -486,29 +548,84 @@ def do_user_task(browser, account_label, cookies, targets):
 
         prepare_chat_page(page, account_label, targets)
         logger.debug(f"{account_label} 开始发送消息")
-        send_targets_with_recovery(page, account_label, targets)
+        send_targets_with_recovery(
+            page,
+            account_label,
+            targets,
+            run_id=run_id,
+        )
     finally:
         context.close()
 
 
 def runTasks():
-    playwright, browser = get_browser()
+    run_id = create_run_id()
+    started_at = time.monotonic()
+    playwright = None
+    browser = None
     try:
+        playwright, browser = get_browser()
         # 检查是否启用多任务和任务数量
         # 创建信号量以限制并发任务数量
-        logger.info("开始执行任务")
+        logger.info(
+            "Scheduled messaging run started",
+            extra={
+                "event": "run_started",
+                "run_id": run_id,
+                "account_count": len(userData),
+            },
+        )
         logger.debug(f"已加载 {len(userData)} 个账号任务")
 
         for account_index, user in enumerate(userData, start=1):
             cookies = user["cookies"]
             targets = user["targets"]
             account_label = f"account-{account_index}"
-            logger.info(f"开始处理 {account_label}")
+            logger.info(
+                "Account task started",
+                extra={
+                    "event": "account_task_started",
+                    "run_id": run_id,
+                    "account": account_label,
+                    "target_count": len(targets),
+                },
+            )
             # 创建任务
-            do_user_task(browser, account_label, cookies, targets)
-            logger.info(f"{account_label} 任务完成")
+            do_user_task(browser, account_label, cookies, targets, run_id=run_id)
+            logger.info(
+                "Account task completed",
+                extra={
+                    "event": "account_task_completed",
+                    "run_id": run_id,
+                    "account": account_label,
+                    "target_count": len(targets),
+                    "outcome": "success",
+                },
+            )
+        logger.info(
+            "Scheduled messaging run completed",
+            extra={
+                "event": "run_completed",
+                "run_id": run_id,
+                "account_count": len(userData),
+                "duration_ms": round((time.monotonic() - started_at) * 1000),
+                "outcome": "success",
+            },
+        )
+    except Exception as error:
+        logger.error(
+            "Scheduled messaging run failed",
+            extra={
+                "event": "run_failed",
+                "run_id": run_id,
+                "duration_ms": round((time.monotonic() - started_at) * 1000),
+                "outcome": "failure",
+                "error_type": type(error).__name__,
+            },
+        )
+        raise
     finally:
-        # 关闭浏览器实例
-        browser.close()
-
-        playwright.stop()
+        if browser is not None:
+            browser.close()
+        if playwright is not None:
+            playwright.stop()
