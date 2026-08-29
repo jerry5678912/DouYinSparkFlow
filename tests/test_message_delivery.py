@@ -2,6 +2,8 @@ import unittest
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
+import core.tasks as tasks
+
 from core.tasks import (
     CHAT_EDITOR_INPUT_SELECTOR,
     CONVERSATION_SELECTED_SCRIPT,
@@ -15,6 +17,8 @@ from core.tasks import (
     dismiss_trust_login_dialog,
     ensure_all_targets_sent,
     send_message_verified,
+    target_identity_data_ready,
+    wait_for_target_identity_data,
 )
 
 
@@ -99,7 +103,26 @@ class FakeConversationElement:
         return self.handle
 
 
+class FakeIdentityPage:
+    def __init__(self, on_wait=None):
+        self.on_wait = on_wait
+        self.timeout_waits = []
+
+    def wait_for_timeout(self, timeout):
+        self.timeout_waits.append(timeout)
+        if self.on_wait:
+            self.on_wait(len(self.timeout_waits))
+
+
 class MessageDeliveryTests(unittest.TestCase):
+    def setUp(self):
+        self.saved_user_id_dict = dict(tasks.userIDDict)
+        tasks.userIDDict.clear()
+
+    def tearDown(self):
+        tasks.userIDDict.clear()
+        tasks.userIDDict.update(self.saved_user_id_dict)
+
     def test_embedded_delivery_scripts_preserve_javascript_regex_escapes(self):
         self.assertIn(r"/\r\n/g", MESSAGE_COUNT_SCRIPT)
         self.assertIn(r"/\r\n/g", MESSAGE_DELIVERED_SCRIPT)
@@ -182,6 +205,54 @@ class MessageDeliveryTests(unittest.TestCase):
 
     def test_all_targets_sent_passes(self):
         ensure_all_targets_sent(["friend-a"], {"friend-a"})
+
+    def test_target_identity_readiness_matches_any_douyin_identifier(self):
+        tasks.userIDDict["Friend"] = [
+            "short-id",
+            "2000C616",
+            "sec-id",
+            "Friend",
+            "Friend",
+        ]
+
+        self.assertTrue(target_identity_data_ready({"2000C616"}))
+        self.assertFalse(target_identity_data_ready({"unrelated-id"}))
+
+    def test_target_identity_wait_stops_as_soon_as_response_data_arrives(self):
+        def populate_after_second_poll(poll_count):
+            if poll_count == 2:
+                tasks.userIDDict["Friend"] = [
+                    "short-id",
+                    "2000C616",
+                    "sec-id",
+                    "Friend",
+                    "Friend",
+                ]
+
+        page = FakeIdentityPage(on_wait=populate_after_second_poll)
+
+        self.assertTrue(
+            wait_for_target_identity_data(
+                page,
+                {"2000C616"},
+                timeout=500,
+                poll_interval=100,
+            )
+        )
+        self.assertEqual(page.timeout_waits, [100, 100])
+
+    def test_target_identity_wait_uses_exact_timeout(self):
+        page = FakeIdentityPage()
+
+        self.assertFalse(
+            wait_for_target_identity_data(
+                page,
+                {"missing-id"},
+                timeout=250,
+                poll_interval=100,
+            )
+        )
+        self.assertEqual(page.timeout_waits, [100, 100, 50])
 
 
 if __name__ == "__main__":

@@ -28,6 +28,8 @@ MESSAGE_DELIVERY_TIMEOUT_MS = 10000
 POST_SEND_SETTLE_MS = 3000
 TRUST_LOGIN_CANCEL_SELECTOR = ".trust-login-dialog-button-cancel"
 TRUST_LOGIN_DIALOG_TIMEOUT_MS = 3000
+TARGET_IDENTITY_WAIT_TIMEOUT_MS = 5000
+TARGET_IDENTITY_POLL_MS = 100
 
 MESSAGE_COUNT_SCRIPT = r"""
 ({ messageSelector, message }) => {
@@ -194,6 +196,36 @@ def dismiss_trust_login_dialog(page, timeout=TRUST_LOGIN_DIALOG_TIMEOUT_MS):
     except PlaywrightTimeoutError:
         return False
 
+
+def target_identity_data_ready(targets):
+    """Return whether Douyin's user-info responses identify a configured target."""
+    normalized_targets = {norm(str(target)) for target in targets if target}
+    for identity_values in userIDDict.values():
+        normalized_values = {
+            norm(str(value)) for value in identity_values if value
+        }
+        if normalized_targets.intersection(normalized_values):
+            return True
+    return False
+
+
+def wait_for_target_identity_data(
+    page,
+    targets,
+    timeout=TARGET_IDENTITY_WAIT_TIMEOUT_MS,
+    poll_interval=TARGET_IDENTITY_POLL_MS,
+):
+    """Wait only as long as needed for the target's user-info response."""
+    elapsed = 0
+    while elapsed < timeout:
+        if target_identity_data_ready(targets):
+            return True
+        wait_ms = min(poll_interval, timeout - elapsed)
+        page.wait_for_timeout(wait_ms)
+        elapsed += wait_ms
+    return target_identity_data_ready(targets)
+
+
 def checkTargetName(targetName, targets):
     """检查targetName是否为目标
     """
@@ -344,6 +376,7 @@ def scroll_and_select_user(page, username, targets):
 
 
 def do_user_task(browser, username, cookies, targets):
+    userIDDict.clear()
     context = browser.new_context()  # 每个任务使用独立的上下文
     context.set_default_navigation_timeout(
         config["browserTimeout"]
@@ -362,6 +395,18 @@ def do_user_task(browser, username, cookies, targets):
     # 打开抖音网页聊天页面
     open_chat_page(page)
     dismiss_trust_login_dialog(page)
+
+    identity_ready = wait_for_target_identity_data(
+        page,
+        targets,
+        timeout=max(config["friendListTimeout"], TARGET_IDENTITY_WAIT_TIMEOUT_MS),
+    )
+    if identity_ready:
+        logger.debug(f"账号 {username} 已加载目标好友身份信息")
+    else:
+        logger.warning(
+            f"账号 {username} 等待目标好友身份信息超时，将继续按聊天标题查找"
+        )
 
     logger.debug(f"账号 {username} 开始发送消息")
     sent_targets = set()
