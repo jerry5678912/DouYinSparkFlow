@@ -166,6 +166,22 @@ def retry_operation(name, operation, retries=3, delay=2, *args, **kwargs):
                 logger.error(f"{name} 失败，已达到最大重试次数，错误：{e}")
                 raise
 
+
+def open_chat_page(page):
+    """Open Douyin chat without waiting for the SPA's long-lived load event."""
+    retry_operation(
+        "打开抖音网页聊天页面",
+        page.goto,
+        retries=config["taskRetryTimes"],
+        delay=5,
+        url="https://www.douyin.com/chat",
+        wait_until="domcontentloaded",
+    )
+    page.wait_for_selector(
+        CONVERSATION_LIST_SELECTOR,
+        timeout=config["browserTimeout"],
+    )
+
 def checkTargetName(targetName, targets):
     """检查targetName是否为目标
     """
@@ -332,13 +348,7 @@ def do_user_task(browser, username, cookies, targets):
     context.add_cookies(cookies)
 
     # 打开抖音网页聊天页面
-    retry_operation(
-        "打开抖音网页聊天页面",
-        page.goto,
-        retries=config["taskRetryTimes"],
-        delay=5,
-        url="https://www.douyin.com/chat",
-    )
+    open_chat_page(page)
 
     time.sleep(5)  # 等待5秒让过可能存在的弹窗
 
