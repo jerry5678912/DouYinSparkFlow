@@ -68,7 +68,7 @@ gcloud run jobs create douyin-spark-flow \
   --image=REGION-docker.pkg.dev/PROJECT_ID/douyin-spark-flow/app:latest \
   --region=REGION \
   --tasks=1 \
-  --max-retries=1 \
+  --max-retries=0 \
   --task-timeout=30m \
   --cpu=2 \
   --memory=4Gi \
@@ -94,15 +94,42 @@ Cloud Run Job:
 ```bash
 gcloud scheduler jobs create http douyin-daily \
   --location=REGION \
-  --schedule="17 9 * * *" \
+  --schedule="0 13 * * *" \
   --time-zone="Asia/Singapore" \
   --uri="https://run.googleapis.com/v2/projects/PROJECT_ID/locations/REGION/jobs/douyin-spark-flow:run" \
   --http-method=POST \
   --oauth-service-account-email=SCHEDULER_SERVICE_ACCOUNT
 ```
 
-This example runs daily at 09:17 Singapore time. Pick a minute other than `00`
-to reduce schedule contention.
+This example runs daily at 1:00 PM Singapore time.
+
+## 6. Daily status email
+
+The job can send one Gmail status report after every execution. Its subject and
+body classify the whole run as:
+
+- `SUCCESS`: every configured target was verified as sent.
+- `PARTIAL_SUCCESS`: at least one, but not every, target was verified as sent.
+- `FAILED`: no configured target was verified as sent.
+
+The report contains counts, duration, and the Cloud Run execution ID. It omits
+Douyin account names, recipient names, message text, and cookies.
+
+Create three Secret Manager secrets and map them to these environment variables:
+
+```text
+STATUS_EMAIL_FROM
+STATUS_EMAIL_TO
+STATUS_EMAIL_APP_PASSWORD
+```
+
+`STATUS_EMAIL_APP_PASSWORD` must be a 16-character Google app password; never
+use the Google account's normal password. Pin each secret mapping to a numbered
+version for predictable deployments. The application connects only to
+`smtp.gmail.com:465` using verified TLS.
+
+Keep `--max-retries=0`. An ambiguous browser send is deliberately not retried,
+because retrying it can produce a duplicate message.
 
 ## Operations
 

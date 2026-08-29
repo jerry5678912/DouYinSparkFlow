@@ -14,6 +14,8 @@ RELIABILITY_FIELDS = {
     "target_count",
     "remaining_count",
     "verified_count",
+    "failed_count",
+    "completed_account_count",
     "duration_ms",
     "outcome",
     "error_type",

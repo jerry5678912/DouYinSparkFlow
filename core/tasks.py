@@ -6,6 +6,7 @@ from utils.config import get_config, get_userData
 from utils import norm
 from core.msg_builder import build_message
 from core.browser import get_browser
+from core.results import RunStatus, RunSummary, TargetSendResult
 from playwright.sync_api import Response, TimeoutError as PlaywrightTimeoutError
 import time
 
@@ -477,9 +478,10 @@ def send_targets_with_recovery(
     configured_attempts = max_search_attempts or config["taskRetryTimes"]
     search_attempts = max(1, min(configured_attempts, 3))
     sent_targets = set()
+    failed_targets = set()
 
     for search_attempt in range(1, search_attempts + 1):
-        remaining_targets = set(targets) - sent_targets
+        remaining_targets = set(targets) - sent_targets - failed_targets
         if not remaining_targets:
             break
 
@@ -513,8 +515,24 @@ def send_targets_with_recovery(
             )
             chat_input = page.locator(CHAT_EDITOR_INPUT_SELECTOR)
 
-            message = build_message()
-            send_message_verified(page, chat_input, message, run_id=run_id)
+            try:
+                message = build_message()
+                send_message_verified(page, chat_input, message, run_id=run_id)
+            except Exception as error:
+                failed_targets.add(target_symbol)
+                logger.error(
+                    "Message send could not be verified and will not be retried",
+                    extra={
+                        "event": "message_send_failed",
+                        "run_id": run_id,
+                        "account": account_label,
+                        "verified_count": len(sent_targets),
+                        "target_count": len(targets),
+                        "error_type": type(error).__name__,
+                    },
+                )
+                continue
+
             sent_targets.add(target_symbol)
             logger.info(
                 "Message send was verified",
@@ -527,8 +545,10 @@ def send_targets_with_recovery(
                 },
             )
 
-    ensure_all_targets_sent(targets, sent_targets)
-    return sent_targets
+    return TargetSendResult(
+        target_count=len(targets),
+        verified_count=len(sent_targets),
+    )
 
 
 def do_user_task(browser, account_label, cookies, targets, run_id=None):
@@ -548,19 +568,34 @@ def do_user_task(browser, account_label, cookies, targets, run_id=None):
 
         prepare_chat_page(page, account_label, targets)
         logger.debug(f"{account_label} 开始发送消息")
-        send_targets_with_recovery(
+        return send_targets_with_recovery(
             page,
             account_label,
             targets,
             run_id=run_id,
         )
     finally:
-        context.close()
+        try:
+            context.close()
+        except Exception as error:
+            logger.warning(
+                "Browser context cleanup failed",
+                extra={
+                    "event": "browser_context_cleanup_failed",
+                    "run_id": run_id,
+                    "account": account_label,
+                    "error_type": type(error).__name__,
+                },
+            )
 
 
 def runTasks():
     run_id = create_run_id()
     started_at = time.monotonic()
+    target_count = sum(len(user["targets"]) for user in userData)
+    verified_count = 0
+    completed_account_count = 0
+    runtime_error_type = None
     playwright = None
     browser = None
     try:
@@ -590,42 +625,115 @@ def runTasks():
                     "target_count": len(targets),
                 },
             )
-            # 创建任务
-            do_user_task(browser, account_label, cookies, targets, run_id=run_id)
+            try:
+                account_result = do_user_task(
+                    browser,
+                    account_label,
+                    cookies,
+                    targets,
+                    run_id=run_id,
+                )
+            except Exception as error:
+                logger.error(
+                    "Account task failed before producing a delivery result",
+                    extra={
+                        "event": "account_task_failed",
+                        "run_id": run_id,
+                        "account": account_label,
+                        "target_count": len(targets),
+                        "outcome": "failure",
+                        "error_type": type(error).__name__,
+                    },
+                )
+                continue
+
+            verified_count += account_result.verified_count
+            if account_result.failed_count == 0:
+                completed_account_count += 1
+            if account_result.failed_count == 0:
+                account_outcome = "success"
+            elif account_result.verified_count:
+                account_outcome = "partial_success"
+            else:
+                account_outcome = "failure"
             logger.info(
                 "Account task completed",
                 extra={
                     "event": "account_task_completed",
                     "run_id": run_id,
                     "account": account_label,
-                    "target_count": len(targets),
-                    "outcome": "success",
+                    "target_count": account_result.target_count,
+                    "verified_count": account_result.verified_count,
+                    "failed_count": account_result.failed_count,
+                    "outcome": account_outcome,
                 },
             )
-        logger.info(
-            "Scheduled messaging run completed",
-            extra={
-                "event": "run_completed",
-                "run_id": run_id,
-                "account_count": len(userData),
-                "duration_ms": round((time.monotonic() - started_at) * 1000),
-                "outcome": "success",
-            },
-        )
     except Exception as error:
-        logger.error(
-            "Scheduled messaging run failed",
-            extra={
-                "event": "run_failed",
-                "run_id": run_id,
-                "duration_ms": round((time.monotonic() - started_at) * 1000),
-                "outcome": "failure",
-                "error_type": type(error).__name__,
-            },
-        )
-        raise
+        runtime_error_type = type(error).__name__
     finally:
         if browser is not None:
-            browser.close()
+            try:
+                browser.close()
+            except Exception as error:
+                logger.warning(
+                    "Browser cleanup failed",
+                    extra={
+                        "event": "browser_cleanup_failed",
+                        "run_id": run_id,
+                        "error_type": type(error).__name__,
+                    },
+                )
         if playwright is not None:
-            playwright.stop()
+            try:
+                playwright.stop()
+            except Exception as error:
+                logger.warning(
+                    "Playwright cleanup failed",
+                    extra={
+                        "event": "playwright_cleanup_failed",
+                        "run_id": run_id,
+                        "error_type": type(error).__name__,
+                    },
+                )
+
+    summary = RunSummary.from_counts(
+        run_id=run_id,
+        target_count=target_count,
+        verified_count=verified_count,
+        account_count=len(userData),
+        completed_account_count=completed_account_count,
+        duration_ms=round((time.monotonic() - started_at) * 1000),
+    )
+    log_method = (
+        logger.info
+        if summary.status is RunStatus.SUCCESS
+        else logger.warning
+        if summary.status is RunStatus.PARTIAL_SUCCESS
+        else logger.error
+    )
+    event = (
+        "run_completed"
+        if summary.status is RunStatus.SUCCESS
+        else "run_partial_success"
+        if summary.status is RunStatus.PARTIAL_SUCCESS
+        else "run_failed"
+    )
+    final_fields = {
+        "event": event,
+        "run_id": run_id,
+        "account_count": summary.account_count,
+        "completed_account_count": summary.completed_account_count,
+        "target_count": summary.target_count,
+        "verified_count": summary.verified_count,
+        "failed_count": summary.failed_count,
+        "duration_ms": summary.duration_ms,
+        "outcome": summary.status.value.lower(),
+    }
+    if runtime_error_type is not None:
+        final_fields["error_type"] = runtime_error_type
+
+    log_method(
+        "Scheduled messaging run produced a final result",
+        extra=final_fields,
+    )
+    return summary

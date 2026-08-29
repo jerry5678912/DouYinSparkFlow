@@ -238,13 +238,46 @@ class MessageDeliveryTests(unittest.TestCase):
             )
 
         self.assertEqual(scans, [{"friend-a", "friend-b"}, {"friend-b"}])
-        self.assertEqual(sent, {"friend-a", "friend-b"})
+        self.assertEqual(sent.target_count, 2)
+        self.assertEqual(sent.verified_count, 2)
+        self.assertEqual(sent.failed_count, 0)
         self.assertEqual(send_message.call_count, 2)
         prepare_chat_page.assert_called_once_with(
             page,
             "account-1",
             {"friend-b"},
         )
+
+    @patch.object(tasks, "send_message_verified")
+    @patch.object(tasks, "build_message", return_value="hello")
+    def test_one_failed_target_does_not_block_later_targets(
+        self,
+        build_message,
+        send_message,
+    ):
+        page = FakePage()
+        send_message.side_effect = [
+            MessageDeliveryError("ambiguous send"),
+            None,
+        ]
+
+        with patch.object(
+            tasks,
+            "scroll_and_select_user",
+            return_value=iter(["friend-a", "friend-b"]),
+        ):
+            result = tasks.send_targets_with_recovery(
+                page,
+                "account-1",
+                {"friend-a", "friend-b"},
+                max_search_attempts=1,
+                run_id="run-123",
+            )
+
+        self.assertEqual(send_message.call_count, 2)
+        self.assertEqual(result.target_count, 2)
+        self.assertEqual(result.verified_count, 1)
+        self.assertEqual(result.failed_count, 1)
 
     def test_trust_login_prompt_is_cancelled_when_present(self):
         page = FakeTrustLoginPage()
