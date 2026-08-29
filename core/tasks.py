@@ -17,29 +17,27 @@ CONVERSATION_TITLE_SELECTOR = ".conversationConversationItemtitle"
 CONVERSATION_LIST_SELECTOR = ".conversationConversationListwrapper"
 CHAT_EDITOR_SELECTOR = ".messageEditorimChatEditorContainer"
 CHAT_EDITOR_INPUT_SELECTOR = f"{CHAT_EDITOR_SELECTOR} [contenteditable='true']"
+OUTGOING_MESSAGE_TEXT_SELECTOR = (
+    ".MessageItemTextcontainer.MessageItemTextisFromMe .TextMessageTextpureText"
+)
+CONVERSATION_SELECTED_SCRIPT = """
+(element) => element.classList.contains("conversationConversationItemcurConversation")
+"""
+CONVERSATION_SETTLE_MS = 1000
 MESSAGE_DELIVERY_TIMEOUT_MS = 10000
 
 MESSAGE_COUNT_SCRIPT = r"""
-({ editorSelector, message }) => {
-    const editor = document.querySelector(editorSelector);
+({ messageSelector, message }) => {
     const normalizedMessage = message.replace(/\r\n/g, "\n").trim();
 
-    return Array.from(document.querySelectorAll("div, span, p")).filter((element) => {
-        if (editor && editor.contains(element)) {
-            return false;
-        }
-        if ((element.innerText || "").trim() !== normalizedMessage) {
-            return false;
-        }
-        return !Array.from(element.children).some(
-            (child) => (child.innerText || "").trim() === normalizedMessage
-        );
-    }).length;
+    return Array.from(document.querySelectorAll(messageSelector)).filter(
+        (element) => (element.innerText || "").trim() === normalizedMessage
+    ).length;
 }
 """
 
 MESSAGE_DELIVERED_SCRIPT = r"""
-({ editorSelector, message, countBefore }) => {
+({ editorSelector, messageSelector, message, countBefore }) => {
     const editor = document.querySelector(editorSelector);
     const editorText = editor
         ? (editor.innerText || editor.textContent || "").replace(/[\u200B-\u200D\uFEFF]/g, "").trim()
@@ -49,17 +47,9 @@ MESSAGE_DELIVERED_SCRIPT = r"""
     }
 
     const normalizedMessage = message.replace(/\r\n/g, "\n").trim();
-    const renderedCount = Array.from(document.querySelectorAll("div, span, p")).filter((element) => {
-        if (editor.contains(element)) {
-            return false;
-        }
-        if ((element.innerText || "").trim() !== normalizedMessage) {
-            return false;
-        }
-        return !Array.from(element.children).some(
-            (child) => (child.innerText || "").trim() === normalizedMessage
-        );
-    }).length;
+    const renderedCount = Array.from(document.querySelectorAll(messageSelector)).filter(
+        (element) => (element.innerText || "").trim() === normalizedMessage
+    ).length;
 
     return renderedCount > countBefore;
 }
@@ -76,7 +66,10 @@ def send_message_verified(page, chat_input, message, timeout=MESSAGE_DELIVERY_TI
     rendered_message = "\n".join(message_lines)
     count_before = page.evaluate(
         MESSAGE_COUNT_SCRIPT,
-        {"editorSelector": CHAT_EDITOR_INPUT_SELECTOR, "message": rendered_message},
+        {
+            "messageSelector": OUTGOING_MESSAGE_TEXT_SELECTOR,
+            "message": rendered_message,
+        },
     )
 
     for index, line in enumerate(message_lines):
@@ -91,6 +84,7 @@ def send_message_verified(page, chat_input, message, timeout=MESSAGE_DELIVERY_TI
             MESSAGE_DELIVERED_SCRIPT,
             arg={
                 "editorSelector": CHAT_EDITOR_INPUT_SELECTOR,
+                "messageSelector": OUTGOING_MESSAGE_TEXT_SELECTOR,
                 "message": rendered_message,
                 "countBefore": count_before,
             },
@@ -100,6 +94,17 @@ def send_message_verified(page, chat_input, message, timeout=MESSAGE_DELIVERY_TI
         raise MessageDeliveryError(
             "Douyin did not render a new outgoing message after one send attempt"
         ) from error
+
+
+def activate_conversation(page, element, timeout):
+    """Select a conversation and wait for its message history to settle."""
+    element.click()
+    page.wait_for_function(
+        CONVERSATION_SELECTED_SCRIPT,
+        arg=element.element_handle(),
+        timeout=timeout,
+    )
+    page.wait_for_timeout(CONVERSATION_SETTLE_MS)
 
 
 def ensure_all_targets_sent(targets, sent_targets):
@@ -221,7 +226,7 @@ def scroll_and_select_user(page, username, targets):
                 targetSymbol = checkTargetName(targetName, targets)
 
                 if targetSymbol:
-                    element.click()
+                    activate_conversation(page, element, config["browserTimeout"])
                     
                     yield targetSymbol
 
