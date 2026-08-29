@@ -8,6 +8,7 @@ from core.tasks import (
     MESSAGE_COUNT_SCRIPT,
     MESSAGE_DELIVERED_SCRIPT,
     OUTGOING_MESSAGE_TEXT_SELECTOR,
+    SEND_BUTTON_SELECTOR,
     MessageDeliveryError,
     activate_conversation,
     ensure_all_targets_sent,
@@ -33,6 +34,8 @@ class FakePage:
         self.wait_arguments = None
         self.evaluate_arguments = []
         self.timeout_waits = []
+        self.send_button = FakeSendButton()
+        self.waited_selectors = []
 
     def evaluate(self, script, argument):
         self.evaluate_arguments.append(argument)
@@ -45,6 +48,22 @@ class FakePage:
 
     def wait_for_timeout(self, timeout):
         self.timeout_waits.append(timeout)
+
+    def wait_for_selector(self, selector, timeout):
+        self.waited_selectors.append((selector, timeout))
+
+    def locator(self, selector):
+        if selector != SEND_BUTTON_SELECTOR:
+            raise AssertionError(f"unexpected selector: {selector}")
+        return self.send_button
+
+
+class FakeSendButton:
+    def __init__(self):
+        self.click_count = 0
+
+    def click(self):
+        self.click_count += 1
 
 
 class FakeConversationElement:
@@ -101,7 +120,9 @@ class MessageDeliveryTests(unittest.TestCase):
         send_message_verified(page, chat_input, "first\\nsecond", timeout=4321)
 
         self.assertEqual(chat_input.typed, ["first", "second"])
-        self.assertEqual(chat_input.pressed, ["Shift+Enter", "Enter"])
+        self.assertEqual(chat_input.pressed, ["Shift+Enter"])
+        self.assertEqual(page.send_button.click_count, 1)
+        self.assertIn((SEND_BUTTON_SELECTOR, 4321), page.waited_selectors)
         self.assertEqual(page.wait_arguments["arg"]["countBefore"], 2)
         self.assertEqual(
             page.wait_arguments["arg"]["editorSelector"],
@@ -109,14 +130,15 @@ class MessageDeliveryTests(unittest.TestCase):
         )
         self.assertEqual(page.wait_arguments["timeout"], 4321)
 
-    def test_unverified_send_fails_without_pressing_enter_twice(self):
+    def test_unverified_send_fails_without_clicking_send_twice(self):
         page = FakePage(delivery_error=PlaywrightTimeoutError("not rendered"))
         chat_input = FakeChatInput()
 
         with self.assertRaises(MessageDeliveryError):
             send_message_verified(page, chat_input, "hello", timeout=100)
 
-        self.assertEqual(chat_input.pressed.count("Enter"), 1)
+        self.assertNotIn("Enter", chat_input.pressed)
+        self.assertEqual(page.send_button.click_count, 1)
 
     def test_missing_targets_make_the_task_fail(self):
         with self.assertRaises(MessageDeliveryError):

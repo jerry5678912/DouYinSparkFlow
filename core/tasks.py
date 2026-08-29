@@ -17,6 +17,7 @@ CONVERSATION_TITLE_SELECTOR = ".conversationConversationItemtitle"
 CONVERSATION_LIST_SELECTOR = ".conversationConversationListwrapper"
 CHAT_EDITOR_SELECTOR = ".messageEditorimChatEditorContainer"
 CHAT_EDITOR_INPUT_SELECTOR = f"{CHAT_EDITOR_SELECTOR} [contenteditable='true']"
+SEND_BUTTON_SELECTOR = ".messageMsgInputinputAction"
 OUTGOING_MESSAGE_TEXT_SELECTOR = (
     ".MessageItemTextcontainer.MessageItemTextisFromMe .TextMessageTextpureText"
 )
@@ -77,7 +78,8 @@ def send_message_verified(page, chat_input, message, timeout=MESSAGE_DELIVERY_TI
         if index < len(message_lines) - 1:
             chat_input.press("Shift+Enter")
 
-    chat_input.press("Enter")
+    page.wait_for_selector(SEND_BUTTON_SELECTOR, timeout=timeout)
+    page.locator(SEND_BUTTON_SELECTOR).click()
 
     try:
         page.wait_for_function(
