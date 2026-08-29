@@ -52,6 +52,7 @@ class SecurityHardeningTests(unittest.TestCase):
     def test_container_runs_as_non_root_user(self):
         dockerfile = (REPOSITORY_ROOT / "Dockerfile").read_text(encoding="utf-8")
 
+        self.assertIn("chown -R pwuser:pwuser /app", dockerfile)
         self.assertIn("USER pwuser", dockerfile)
 
     def test_legacy_cron_helper_does_not_copy_the_whole_environment(self):
@@ -62,6 +63,18 @@ class SecurityHardeningTests(unittest.TestCase):
         self.assertNotIn("merged_vars", entrypoint)
         self.assertIn("chmod 0600 /etc/douyin-spark-flow.env", entrypoint)
         self.assertIn("must be an integer", entrypoint)
+        self.assertIn('re.fullmatch(r"[A-Z_][A-Z0-9_]*", key)', entrypoint)
+
+    def test_runtime_logs_do_not_include_message_or_recipient_identifiers(self):
+        tasks_source = (REPOSITORY_ROOT / "core" / "tasks.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertNotIn("目标好友列表: {targets}", tasks_source)
+        self.assertNotIn("找到好友 {targetName}", tasks_source)
+        self.assertNotIn("消息模板:", tasks_source)
+        self.assertNotIn("目标好友: {user['targets']}", tasks_source)
+        self.assertNotIn("开始处理账号 {username}", tasks_source)
 
 
 if __name__ == "__main__":

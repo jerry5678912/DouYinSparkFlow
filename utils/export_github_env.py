@@ -1,6 +1,11 @@
 import json
 import os
+import re
+import secrets
 import sys
+
+
+ENV_KEY_PATTERN = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 
 
 def fail(message: str) -> None:
@@ -13,10 +18,22 @@ def to_dotenv_value(value: str) -> str:
     return value.replace("\r", "").replace("\n", "\\n")
 
 
+def validate_env_key(key: str) -> str:
+    if not ENV_KEY_PATTERN.fullmatch(key):
+        raise ValueError(
+            f"Invalid environment variable name: {key!r}; use A-Z, 0-9 and underscore"
+        )
+    return key
+
+
 def append_github_env_block(env_file, key: str, value: str) -> None:
-    env_file.write(f"{key}<<__ENV_EOF__\n")
+    key = validate_env_key(key)
+    delimiter = f"__ENV_{secrets.token_hex(16)}__"
+    while delimiter in value.splitlines():
+        delimiter = f"__ENV_{secrets.token_hex(16)}__"
+    env_file.write(f"{key}<<{delimiter}\n")
     env_file.write(value)
-    env_file.write("\n__ENV_EOF__\n")
+    env_file.write(f"\n{delimiter}\n")
 
 
 def as_env_string(value) -> str:
@@ -25,12 +42,6 @@ def as_env_string(value) -> str:
     if isinstance(value, str):
         return value
     return json.dumps(value, ensure_ascii=False)
-
-
-def format_key_list(keys) -> str:
-    if not keys:
-        return "(none)"
-    return ", ".join(sorted(str(key) for key in keys))
 
 
 def main() -> None:
@@ -57,8 +68,13 @@ def main() -> None:
         fail("SECRETS_JSON must be a JSON object")
 
     dotenv_map = {}
-    vars_keys = list(vars_map.keys())
-    secrets_keys = list(secrets_map.keys())
+    try:
+        vars_map = {validate_env_key(str(key)): value for key, value in vars_map.items()}
+        secrets_map = {
+            validate_env_key(str(key)): value for key, value in secrets_map.items()
+        }
+    except ValueError as exc:
+        fail(str(exc))
 
     with open(github_env, "a", encoding="utf-8") as env_file:
         for key, value in vars_map.items():
@@ -74,15 +90,11 @@ def main() -> None:
     dotenv_lines = [f"{key}={to_dotenv_value(value)}" for key, value in dotenv_map.items()]
     with open(".env", "w", encoding="utf-8") as dotenv_file:
         dotenv_file.write("\n".join(dotenv_lines) + "\n")
+    os.chmod(".env", 0o600)
 
-    print(
-        "Exported all variables from VARS_JSON and SECRETS_JSON; .env refreshed."
-    )
-    print(f"VARS_JSON exported ({len(vars_keys)}): {format_key_list(vars_keys)}")
-    print(
-        "SECRETS_JSON exported "
-        f"({len(secrets_keys)}): {format_key_list(secrets_keys)}"
-    )
+    print("Environment values exported; .env refreshed with restricted permissions.")
+    print(f"VARS_JSON exported: {len(vars_map)}")
+    print(f"SECRETS_JSON exported: {len(secrets_map)}")
 
 
 if __name__ == "__main__":

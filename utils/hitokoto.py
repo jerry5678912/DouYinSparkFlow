@@ -21,28 +21,38 @@ allHitokotoTypes = {
 def request_hitokoto():
     """请求一言 API 获取一句话"""
     config = get_config()
-    
-    api_url = hitokotoApi
-
-    for t in allHitokotoTypes.keys():
-        if t in config["hitokotoTypes"]:
-            if "?" not in api_url:
-                api_url += "?"
-            if "c=" in api_url:
-                api_url += f"&c={allHitokotoTypes[t]}"
-            else:
-                api_url += f"c={allHitokotoTypes[t]}"
+    params = [
+        ("c", code)
+        for quote_type, code in allHitokotoTypes.items()
+        if quote_type in config["hitokotoTypes"]
+    ]
 
     try:
-        response = requests.get(api_url, timeout=10)
+        response = requests.get(
+            hitokotoApi,
+            params=params,
+            timeout=10,
+            allow_redirects=False,
+        )
+        if isinstance(response.status_code, int) and 300 <= response.status_code < 400:
+            raise ValueError("redirects are not accepted from the quote service")
         response.raise_for_status()
         data = response.json()
-        theFrom = data.get("from")
-        if theFrom is None or theFrom.strip() == "":
-            theFrom = "未知来源"
-        theFromWho = data.get("from_who")
-        if theFromWho is None or theFromWho.strip() == "":
-            theFromWho = "未知作者"
-        return f"{data['hitokoto']} —— {theFrom} ({theFromWho})"
-    except Exception as e:
+        if not isinstance(data, dict):
+            raise ValueError("quote response must be a JSON object")
+
+        quote = data.get("hitokoto")
+        source = data.get("from") or "未知来源"
+        author = data.get("from_who") or "未知作者"
+        fields = ((quote, 500), (source, 100), (author, 100))
+        if any(
+            not isinstance(value, str)
+            or not value.strip()
+            or len(value) > maximum
+            for value, maximum in fields
+        ):
+            raise ValueError("quote response contains invalid text")
+
+        return f"{quote.strip()} —— {source.strip()} ({author.strip()})"
+    except (requests.RequestException, ValueError, KeyError, TypeError):
         return "[error] 无法获取一言内容"

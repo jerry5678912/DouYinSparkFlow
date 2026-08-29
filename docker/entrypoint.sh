@@ -10,6 +10,7 @@ fi
 
 python - <<'PY'
 import os
+import re
 import shlex
 from dotenv import dotenv_values
 
@@ -31,13 +32,15 @@ allowed_keys = {
 runtime_vars = {
     key: value
     for key, value in os.environ.items()
-    if key in allowed_keys or key.startswith("COOKIES_")
+    if (key in allowed_keys or key.startswith("COOKIES_"))
+    and re.fullmatch(r"[A-Z_][A-Z0-9_]*", key)
 }
 runtime_vars.update(
     {
         key: value
         for key, value in file_vars.items()
-        if key in allowed_keys or key.startswith("COOKIES_")
+        if (key in allowed_keys or key.startswith("COOKIES_"))
+        and re.fullmatch(r"[A-Z_][A-Z0-9_]*", key)
     }
 )
 

@@ -244,7 +244,7 @@ def checkTargetName(targetName, targets):
     return targetSymbol
 
 
-def scroll_and_select_user(page, username, targets):
+def scroll_and_select_user(page, account_label, targets):
     """尝试滚动并查找用户名"""
     # 定义目标元素和滚动容器的选择器
     target_selector = CONVERSATION_ITEM_SELECTOR
@@ -255,8 +255,7 @@ def scroll_and_select_user(page, username, targets):
     # no_more_selector = 'xpath=//div[contains(@class, "no-more-tip-")]'
     # loading_selector = 'xpath=//div[contains(@class, "semi-spin")]'
 
-    logger.debug(f"账号 {username} 开始查找目标好友列表")
-    logger.debug(f"账号 {username} 目标好友列表: {targets}")
+    logger.debug(f"{account_label} 开始查找 {len(targets)} 个目标好友")
 
     found_targets = set()
     # [修改] 复制一份目标列表用于追踪进度
@@ -283,7 +282,7 @@ def scroll_and_select_user(page, username, targets):
                     continue  # 已处理过，跳过
                 found_targets.add(targetName)
 
-                logger.debug(f"账号 {username} 找到好友 {targetName}")
+                logger.debug(f"{account_label} 找到一个好友候选项")
                 
                 targetSymbol = checkTargetName(targetName, targets)
 
@@ -296,7 +295,7 @@ def scroll_and_select_user(page, username, targets):
                     if targetSymbol in remaining_targets:
                         remaining_targets.remove(targetSymbol)
                     if len(remaining_targets) == 0:
-                        logger.debug(f"账号 {username} 所有目标好友均已找到，停止搜索")
+                        logger.debug(f"{account_label} 所有目标好友均已找到，停止搜索")
                         return
                     break
             except Exception as e:
@@ -323,11 +322,11 @@ def scroll_and_select_user(page, username, targets):
             # 2. [修复] 检查连续空滚动次数，防止死循环
             if empty_scroll_count >= MAX_EMPTY_SCROLLS:
                 logger.warning(
-                    f"账号 {username} 连续 {MAX_EMPTY_SCROLLS} 次滚动未发现新好友，判定已到达底部"
+                    f"{account_label} 连续 {MAX_EMPTY_SCROLLS} 次滚动未发现新好友，判定已到达底部"
                 )
                 if len(remaining_targets) > 0:
                     logger.warning(
-                        f"账号 {username} 搜索结束，仍有以下好友未找到: {remaining_targets}"
+                        f"{account_label} 搜索结束，仍有 {len(remaining_targets)} 个好友未找到"
                     )
                 break
 
@@ -362,20 +361,20 @@ def scroll_and_select_user(page, username, targets):
                     # scrollTop 没有变化，说明已经到底了
                     empty_scroll_count += 2  # 加速判定到底
                     logger.debug(
-                        f"账号 {username} scrollTop 未变化 ({scroll_top_before})，可能已到底 (空滚动计数: {empty_scroll_count}/{MAX_EMPTY_SCROLLS})"
+                        f"{account_label} scrollTop 未变化 ({scroll_top_before})，可能已到底 (空滚动计数: {empty_scroll_count}/{MAX_EMPTY_SCROLLS})"
                     )
                 else:
                     logger.debug(
-                        f"账号 {username} 滚动好友列表以加载更多好友 (scrollTop: {scroll_top_before} -> {scroll_top_after})"
+                        f"{account_label} 滚动好友列表以加载更多好友 (scrollTop: {scroll_top_before} -> {scroll_top_after})"
                     )
 
                 time.sleep(1.5)
             else:
-                logger.error(f"账号 {username} 未找到滚动容器，退出")
+                logger.error(f"{account_label} 未找到滚动容器，退出")
                 break
 
 
-def do_user_task(browser, username, cookies, targets):
+def do_user_task(browser, account_label, cookies, targets):
     userIDDict.clear()
     context = browser.new_context()  # 每个任务使用独立的上下文
     context.set_default_navigation_timeout(
@@ -402,17 +401,17 @@ def do_user_task(browser, username, cookies, targets):
         timeout=max(config["friendListTimeout"], TARGET_IDENTITY_WAIT_TIMEOUT_MS),
     )
     if identity_ready:
-        logger.debug(f"账号 {username} 已加载目标好友身份信息")
+        logger.debug(f"{account_label} 已加载目标好友身份信息")
     else:
         logger.warning(
-            f"账号 {username} 等待目标好友身份信息超时，将继续按聊天标题查找"
+            f"{account_label} 等待目标好友身份信息超时，将继续按聊天标题查找"
         )
 
-    logger.debug(f"账号 {username} 开始发送消息")
+    logger.debug(f"{account_label} 开始发送消息")
     sent_targets = set()
     # 滚动并选择用户
-    for target_symbol in scroll_and_select_user(page, username, targets):
-        logger.debug(f"账号 {username} 已选中目标好友发送消息")
+    for target_symbol in scroll_and_select_user(page, account_label, targets):
+        logger.debug(f"{account_label} 已选中目标好友发送消息")
         # 等待聊天输入框元素加载完成，使用更稳定的属性选择器
         chat_input_selector = CHAT_EDITOR_INPUT_SELECTOR
         page.wait_for_selector(chat_input_selector, timeout=config["browserTimeout"])
@@ -434,22 +433,16 @@ def runTasks():
         # 检查是否启用多任务和任务数量
         # 创建信号量以限制并发任务数量
         logger.info("开始执行任务")
-        logger.debug(f"当前配置如下：")
-        logger.debug(f"消息模板: {config.get('messageTemplate', '未找到消息模板')}")
-        logger.debug(f"一言类型: {config['hitokotoTypes']}")
-        for user in userData:
-            logger.debug(
-                f"用户: {user.get('username', '未知用户')}, 目标好友: {user['targets']}"
-            )
+        logger.debug(f"已加载 {len(userData)} 个账号任务")
 
-        for user in userData:
+        for account_index, user in enumerate(userData, start=1):
             cookies = user["cookies"]
             targets = user["targets"]
-            username = user.get("username", "未知用户")
-            logger.info(f"开始处理账号 {username}")
+            account_label = f"account-{account_index}"
+            logger.info(f"开始处理 {account_label}")
             # 创建任务
-            do_user_task(browser, username, cookies, targets)
-            logger.info(f"账号 {username} 任务完成")
+            do_user_task(browser, account_label, cookies, targets)
+            logger.info(f"{account_label} 任务完成")
     finally:
         # 关闭浏览器实例
         browser.close()
