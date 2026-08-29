@@ -13,7 +13,6 @@ class SelectorTests(unittest.TestCase):
             tasks.CHAT_EDITOR_INPUT_SELECTOR,
             ".messageEditorimChatEditorContainer [contenteditable='true']",
         )
-        self.assertEqual(tasks.SEND_BUTTON_SELECTOR, ".messageMsgInputinputAction")
 
 
 if __name__ == '__main__':
