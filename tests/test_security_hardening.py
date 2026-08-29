@@ -103,6 +103,17 @@ class SecurityHardeningTests(unittest.TestCase):
             end = package_starts[position + 1] if position + 1 < len(package_starts) else len(lines)
             self.assertIn("--hash=sha256:", "\n".join(lines[start:end]))
 
+    def test_local_configuration_page_blocks_network_exfiltration(self):
+        page_source = (REPOSITORY_ROOT / "docs" / "index.html").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('http-equiv="Content-Security-Policy"', page_source)
+        self.assertIn("connect-src 'none'", page_source)
+        self.assertIn("form-action 'none'", page_source)
+        self.assertIn("object-src 'none'", page_source)
+        self.assertIn('name="referrer" content="no-referrer"', page_source)
+
 
 if __name__ == "__main__":
     unittest.main()
