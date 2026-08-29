@@ -15,6 +15,12 @@ class ConfigSecurityTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "TASK_RETRY_TIMES"):
                 config_module.get_config()
 
+    def test_friend_list_timeout_accepts_existing_ui_maximum(self):
+        with patch.dict(
+            os.environ, {"FRIEND_LIST_WAIT_TIME": "120000"}, clear=True
+        ):
+            self.assertEqual(config_module.get_config()["friendListTimeout"], 120000)
+
     def test_hitokoto_types_must_be_a_list_of_supported_values(self):
         with patch.dict(os.environ, {"HITOKOTO_TYPES": '{"bad": true}'}, clear=True):
             with self.assertRaisesRegex(ValueError, "HITOKOTO_TYPES"):

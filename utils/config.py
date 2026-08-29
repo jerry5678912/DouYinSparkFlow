@@ -101,7 +101,7 @@ def get_config():
             "BROWSER_TIMEOUT", 120000, 1000, 300000
         ),
         "friendListTimeout": _parse_bounded_integer(
-            "FRIEND_LIST_WAIT_TIME", 2000, 100, 60000
+            "FRIEND_LIST_WAIT_TIME", 2000, 100, 120000
         ),
         "taskRetryTimes": _parse_bounded_integer("TASK_RETRY_TIMES", 3, 1, 10),
         "logLevel": log_level,
