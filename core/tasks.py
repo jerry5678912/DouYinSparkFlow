@@ -25,6 +25,7 @@ CONVERSATION_SELECTED_SCRIPT = """
 """
 CONVERSATION_SETTLE_MS = 1000
 MESSAGE_DELIVERY_TIMEOUT_MS = 10000
+MESSAGE_DELIVERY_VERIFICATION_ATTEMPTS = 3
 POST_SEND_SETTLE_MS = 3000
 TRUST_LOGIN_CANCEL_SELECTOR = ".trust-login-dialog-button-cancel"
 TRUST_LOGIN_DIALOG_TIMEOUT_MS = 3000
@@ -33,27 +34,41 @@ TARGET_IDENTITY_POLL_MS = 100
 
 MESSAGE_COUNT_SCRIPT = r"""
 ({ messageSelector, message }) => {
-    const normalizedMessage = message.replace(/\r\n/g, "\n").trim();
+    const normalizeText = (value) => (value || "")
+        .replace(/\r\n?/g, "\n")
+        .replace(/[\u200B-\u200D\uFEFF]/g, "")
+        .replace(/\u00A0/g, " ")
+        .split("\n")
+        .map((line) => line.trimEnd())
+        .join("\n")
+        .trim();
+    const normalizedMessage = normalizeText(message);
 
     return Array.from(document.querySelectorAll(messageSelector)).filter(
-        (element) => (element.innerText || "").trim() === normalizedMessage
+        (element) => normalizeText(element.innerText) === normalizedMessage
     ).length;
 }
 """
 
 MESSAGE_DELIVERED_SCRIPT = r"""
 ({ editorSelector, messageSelector, message, countBefore }) => {
+    const normalizeText = (value) => (value || "")
+        .replace(/\r\n?/g, "\n")
+        .replace(/[\u200B-\u200D\uFEFF]/g, "")
+        .replace(/\u00A0/g, " ")
+        .split("\n")
+        .map((line) => line.trimEnd())
+        .join("\n")
+        .trim();
     const editor = document.querySelector(editorSelector);
-    const editorText = editor
-        ? (editor.innerText || editor.textContent || "").replace(/[\u200B-\u200D\uFEFF]/g, "").trim()
-        : null;
+    const editorText = editor ? normalizeText(editor.innerText || editor.textContent) : null;
     if (!editor || editorText !== "") {
         return false;
     }
 
-    const normalizedMessage = message.replace(/\r\n/g, "\n").trim();
+    const normalizedMessage = normalizeText(message);
     const renderedCount = Array.from(document.querySelectorAll(messageSelector)).filter(
-        (element) => (element.innerText || "").trim() === normalizedMessage
+        (element) => normalizeText(element.innerText) === normalizedMessage
     ).length;
 
     return renderedCount > countBefore;
@@ -65,7 +80,13 @@ class MessageDeliveryError(RuntimeError):
     pass
 
 
-def send_message_verified(page, chat_input, message, timeout=MESSAGE_DELIVERY_TIMEOUT_MS):
+def send_message_verified(
+    page,
+    chat_input,
+    message,
+    timeout=MESSAGE_DELIVERY_TIMEOUT_MS,
+    verification_attempts=MESSAGE_DELIVERY_VERIFICATION_ATTEMPTS,
+):
     """Press Enter once and require a newly rendered message before succeeding."""
     message_lines = message.split("\\n")
     rendered_message = "\n".join(message_lines)
@@ -84,21 +105,29 @@ def send_message_verified(page, chat_input, message, timeout=MESSAGE_DELIVERY_TI
 
     chat_input.press("Enter")
 
-    try:
-        page.wait_for_function(
-            MESSAGE_DELIVERED_SCRIPT,
-            arg={
-                "editorSelector": CHAT_EDITOR_INPUT_SELECTOR,
-                "messageSelector": OUTGOING_MESSAGE_TEXT_SELECTOR,
-                "message": rendered_message,
-                "countBefore": count_before,
-            },
-            timeout=timeout,
-        )
-    except PlaywrightTimeoutError as error:
-        raise MessageDeliveryError(
-            "Douyin did not render a new outgoing message after one send attempt"
-        ) from error
+    verification_arguments = {
+        "editorSelector": CHAT_EDITOR_INPUT_SELECTOR,
+        "messageSelector": OUTGOING_MESSAGE_TEXT_SELECTOR,
+        "message": rendered_message,
+        "countBefore": count_before,
+    }
+    attempts = max(1, verification_attempts)
+    for attempt in range(attempts):
+        try:
+            page.wait_for_function(
+                MESSAGE_DELIVERED_SCRIPT,
+                arg=verification_arguments,
+                timeout=timeout,
+            )
+            break
+        except PlaywrightTimeoutError as error:
+            if attempt == attempts - 1:
+                raise MessageDeliveryError(
+                    "Douyin did not render a new outgoing message after one send attempt"
+                ) from error
+            logger.warning(
+                "Delivery confirmation is delayed; observing again without resending"
+            )
 
     page.wait_for_timeout(POST_SEND_SETTLE_MS)
 
@@ -226,6 +255,24 @@ def wait_for_target_identity_data(
     return target_identity_data_ready(targets)
 
 
+def prepare_chat_page(page, account_label, targets):
+    """Open chat and wait for the data needed to identify target conversations."""
+    open_chat_page(page)
+    dismiss_trust_login_dialog(page)
+
+    identity_ready = wait_for_target_identity_data(
+        page,
+        targets,
+        timeout=max(config["friendListTimeout"], TARGET_IDENTITY_WAIT_TIMEOUT_MS),
+    )
+    if identity_ready:
+        logger.debug(f"{account_label} 已加载目标好友身份信息")
+    else:
+        logger.warning(
+            f"{account_label} 等待目标好友身份信息超时，将继续按聊天标题查找"
+        )
+
+
 def checkTargetName(targetName, targets):
     """检查targetName是否为目标
     """
@@ -330,6 +377,7 @@ def scroll_and_select_user(page, account_label, targets):
                     )
                 break
 
+
             # 3. 检查是否正在加载
             # if page.locator(loading_selector).count() > 0:
             #     logger.debug(f"账号 {username} 列表正在加载中 (Loading)...")
@@ -374,6 +422,53 @@ def scroll_and_select_user(page, account_label, targets):
                 break
 
 
+def send_targets_with_recovery(
+    page,
+    account_label,
+    targets,
+    max_search_attempts=None,
+):
+    """Send once per target, retrying only discovery of targets still missing."""
+    configured_attempts = max_search_attempts or config["taskRetryTimes"]
+    search_attempts = max(1, min(configured_attempts, 3))
+    sent_targets = set()
+
+    for search_attempt in range(1, search_attempts + 1):
+        remaining_targets = set(targets) - sent_targets
+        if not remaining_targets:
+            break
+
+        if search_attempt > 1:
+            logger.warning(
+                f"{account_label} 将重新加载聊天列表查找剩余目标，"
+                f"第 {search_attempt}/{search_attempts} 次"
+            )
+            prepare_chat_page(page, account_label, remaining_targets)
+
+        for target_symbol in scroll_and_select_user(
+            page,
+            account_label,
+            remaining_targets,
+        ):
+            if target_symbol in sent_targets:
+                continue
+
+            logger.debug(f"{account_label} 已选中目标好友发送消息")
+            page.wait_for_selector(
+                CHAT_EDITOR_INPUT_SELECTOR,
+                timeout=config["browserTimeout"],
+            )
+            chat_input = page.locator(CHAT_EDITOR_INPUT_SELECTOR)
+
+            message = build_message()
+            send_message_verified(page, chat_input, message)
+            sent_targets.add(target_symbol)
+            logger.info("消息发送并验证成功")
+
+    ensure_all_targets_sent(targets, sent_targets)
+    return sent_targets
+
+
 def do_user_task(browser, account_label, cookies, targets):
     userIDDict.clear()
     context = browser.new_context()  # 每个任务使用独立的上下文
@@ -384,47 +479,16 @@ def do_user_task(browser, account_label, cookies, targets):
         config["browserTimeout"]
     )  # 设置所有操作的默认超时时间为 120 秒
 
-    page = context.new_page()
+    try:
+        page = context.new_page()
+        page.on("response", handle_response)
+        context.add_cookies(cookies)
 
-    page.on("response", handle_response)  # 监听响应，收集好友完整信息用于匹配
-
-    # 注入 Cookie
-    context.add_cookies(cookies)
-
-    # 打开抖音网页聊天页面
-    open_chat_page(page)
-    dismiss_trust_login_dialog(page)
-
-    identity_ready = wait_for_target_identity_data(
-        page,
-        targets,
-        timeout=max(config["friendListTimeout"], TARGET_IDENTITY_WAIT_TIMEOUT_MS),
-    )
-    if identity_ready:
-        logger.debug(f"{account_label} 已加载目标好友身份信息")
-    else:
-        logger.warning(
-            f"{account_label} 等待目标好友身份信息超时，将继续按聊天标题查找"
-        )
-
-    logger.debug(f"{account_label} 开始发送消息")
-    sent_targets = set()
-    # 滚动并选择用户
-    for target_symbol in scroll_and_select_user(page, account_label, targets):
-        logger.debug(f"{account_label} 已选中目标好友发送消息")
-        # 等待聊天输入框元素加载完成，使用更稳定的属性选择器
-        chat_input_selector = CHAT_EDITOR_INPUT_SELECTOR
-        page.wait_for_selector(chat_input_selector, timeout=config["browserTimeout"])
-        chat_input = page.locator(chat_input_selector)
-
-        message = build_message()
-        send_message_verified(page, chat_input, message)
-        sent_targets.add(target_symbol)
-        logger.info("消息发送并验证成功")
-
-    ensure_all_targets_sent(targets, sent_targets)
-
-    context.close()  # 任务完成后关闭上下文
+        prepare_chat_page(page, account_label, targets)
+        logger.debug(f"{account_label} 开始发送消息")
+        send_targets_with_recovery(page, account_label, targets)
+    finally:
+        context.close()
 
 
 def runTasks():

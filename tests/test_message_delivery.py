@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
@@ -35,9 +36,11 @@ class FakeChatInput:
 
 
 class FakePage:
-    def __init__(self, delivery_error=None):
+    def __init__(self, delivery_error=None, delivery_errors=None):
         self.delivery_error = delivery_error
+        self.delivery_errors = list(delivery_errors or [])
         self.wait_arguments = None
+        self.wait_calls = []
         self.evaluate_arguments = []
         self.timeout_waits = []
         self.send_button = FakeSendButton()
@@ -49,7 +52,12 @@ class FakePage:
 
     def wait_for_function(self, script, *, arg, timeout):
         self.wait_arguments = {"arg": arg, "timeout": timeout}
-        if self.delivery_error:
+        self.wait_calls.append(self.wait_arguments)
+        if self.delivery_errors:
+            error = self.delivery_errors.pop(0)
+            if error is not None:
+                raise error
+        elif self.delivery_error is not None:
             raise self.delivery_error
 
     def wait_for_timeout(self, timeout):
@@ -59,7 +67,9 @@ class FakePage:
         self.waited_selectors.append((selector, timeout))
 
     def locator(self, selector):
-        raise AssertionError(f"send verification must not click selector: {selector}")
+        if selector == CHAT_EDITOR_INPUT_SELECTOR:
+            return FakeChatInput()
+        raise AssertionError(f"unexpected selector: {selector}")
 
 
 class FakeSendButton:
@@ -124,11 +134,16 @@ class MessageDeliveryTests(unittest.TestCase):
         tasks.userIDDict.update(self.saved_user_id_dict)
 
     def test_embedded_delivery_scripts_preserve_javascript_regex_escapes(self):
-        self.assertIn(r"/\r\n/g", MESSAGE_COUNT_SCRIPT)
-        self.assertIn(r"/\r\n/g", MESSAGE_DELIVERED_SCRIPT)
+        self.assertIn(r"/\r\n?/g", MESSAGE_COUNT_SCRIPT)
+        self.assertIn(r"/\r\n?/g", MESSAGE_DELIVERED_SCRIPT)
 
     def test_delivery_verifier_ignores_douyin_zero_width_editor_marker(self):
         self.assertIn(r"/[\u200B-\u200D\uFEFF]/g", MESSAGE_DELIVERED_SCRIPT)
+
+    def test_delivery_verifier_normalizes_outgoing_bubble_text(self):
+        self.assertIn(r"/[\u200B-\u200D\uFEFF]/g", MESSAGE_COUNT_SCRIPT)
+        self.assertIn(r"/\u00A0/g", MESSAGE_COUNT_SCRIPT)
+        self.assertIn(r"/\u00A0/g", MESSAGE_DELIVERED_SCRIPT)
 
     def test_delivery_verifier_counts_only_outgoing_message_bubbles(self):
         page = FakePage()
@@ -175,6 +190,18 @@ class MessageDeliveryTests(unittest.TestCase):
         self.assertEqual(page.wait_arguments["timeout"], 4321)
         self.assertEqual(page.timeout_waits, [POST_SEND_SETTLE_MS])
 
+    def test_delayed_delivery_is_rechecked_without_pressing_enter_twice(self):
+        page = FakePage(
+            delivery_errors=[PlaywrightTimeoutError("late render"), None]
+        )
+        chat_input = FakeChatInput()
+
+        send_message_verified(page, chat_input, "hello", timeout=100)
+
+        self.assertEqual(chat_input.pressed, ["Enter"])
+        self.assertEqual(len(page.wait_calls), 2)
+        self.assertEqual(page.timeout_waits, [POST_SEND_SETTLE_MS])
+
     def test_unverified_send_fails_without_pressing_enter_twice(self):
         page = FakePage(delivery_error=PlaywrightTimeoutError("not rendered"))
         chat_input = FakeChatInput()
@@ -185,6 +212,39 @@ class MessageDeliveryTests(unittest.TestCase):
         self.assertEqual(chat_input.pressed, ["Enter"])
         self.assertEqual(page.send_button.click_count, 0)
         self.assertEqual(page.timeout_waits, [])
+
+    @patch.object(tasks, "prepare_chat_page")
+    @patch.object(tasks, "send_message_verified")
+    @patch.object(tasks, "build_message", return_value="hello")
+    def test_target_search_retries_only_targets_not_already_sent(
+        self,
+        build_message,
+        send_message,
+        prepare_chat_page,
+    ):
+        page = FakePage()
+        scans = []
+
+        def scan_targets(_page, _account_label, targets):
+            scans.append(set(targets))
+            return iter(["friend-a"] if len(scans) == 1 else ["friend-b"])
+
+        with patch.object(tasks, "scroll_and_select_user", side_effect=scan_targets):
+            sent = tasks.send_targets_with_recovery(
+                page,
+                "account-1",
+                {"friend-a", "friend-b"},
+                max_search_attempts=2,
+            )
+
+        self.assertEqual(scans, [{"friend-a", "friend-b"}, {"friend-b"}])
+        self.assertEqual(sent, {"friend-a", "friend-b"})
+        self.assertEqual(send_message.call_count, 2)
+        prepare_chat_page.assert_called_once_with(
+            page,
+            "account-1",
+            {"friend-b"},
+        )
 
     def test_trust_login_prompt_is_cancelled_when_present(self):
         page = FakeTrustLoginPage()
