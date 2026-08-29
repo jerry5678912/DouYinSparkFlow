@@ -2,7 +2,7 @@ import traceback
 from utils.logger import setup_logger
 from utils.config import get_config, get_userData
 from utils import norm
-from core.msg_builder import build_message, build_message_with_openai
+from core.msg_builder import build_message
 from core.browser import get_browser
 from playwright.sync_api import Response, TimeoutError as PlaywrightTimeoutError
 import time

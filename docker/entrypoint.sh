@@ -15,11 +15,34 @@ from dotenv import dotenv_values
 
 config_env_path = "/app/.env"
 file_vars = {k: v for k, v in dotenv_values(config_env_path).items() if v is not None}
-merged_vars = dict(os.environ)
-merged_vars.update(file_vars)
+allowed_keys = {
+    "BROWSER_TIMEOUT",
+    "FRIEND_LIST_WAIT_TIME",
+    "GITHUB_ACTIONS",
+    "HITOKOTO_TYPES",
+    "LOG_LEVEL",
+    "MESSAGE_TEMPLATE",
+    "PROXY_ADDRESS",
+    "PYTHONUNBUFFERED",
+    "TASK_RETRY_TIMES",
+    "TASKS",
+}
+
+runtime_vars = {
+    key: value
+    for key, value in os.environ.items()
+    if key in allowed_keys or key.startswith("COOKIES_")
+}
+runtime_vars.update(
+    {
+        key: value
+        for key, value in file_vars.items()
+        if key in allowed_keys or key.startswith("COOKIES_")
+    }
+)
 
 with open('/etc/douyin-spark-flow.env', 'w', encoding='utf-8') as f:
-    for key, value in merged_vars.items():
+    for key, value in runtime_vars.items():
         f.write(f'export {key}={shlex.quote(value)}\n')
 
 with open('/tmp/douyin-spark-flow.cron', 'w', encoding='utf-8') as f:
@@ -28,6 +51,8 @@ with open('/tmp/douyin-spark-flow.cron', 'w', encoding='utf-8') as f:
 with open('/tmp/douyin-spark-flow.tz', 'w', encoding='utf-8') as f:
     f.write(file_vars.get('TZ', os.environ.get('TZ', 'UTC')))
 PY
+
+chmod 0600 /etc/douyin-spark-flow.env
 
 CRON_HOUR="$(python - <<'PY'
 from dotenv import dotenv_values
@@ -52,6 +77,31 @@ export TZ
 
 if [[ -z "$CRON_HOUR" || -z "$CRON_MINUTE" || -z "$CRON_SECOND" ]]; then
   echo "CRON_HOUR, CRON_MINUTE and CRON_SECOND are required." >&2
+  exit 1
+fi
+
+validate_integer() {
+  local name="$1"
+  local value="$2"
+  local minimum="$3"
+  local maximum="$4"
+
+  if [[ ! "$value" =~ ^[0-9]+$ ]]; then
+    echo "$name must be an integer." >&2
+    exit 1
+  fi
+  if (( 10#$value < minimum || 10#$value > maximum )); then
+    echo "$name must be between $minimum and $maximum." >&2
+    exit 1
+  fi
+}
+
+validate_integer "CRON_HOUR" "$CRON_HOUR" 0 23
+validate_integer "CRON_MINUTE" "$CRON_MINUTE" 0 59
+validate_integer "CRON_SECOND" "$CRON_SECOND" 0 59
+
+if [[ ! "$TZ" =~ ^[A-Za-z0-9_+/-]{1,64}$ ]]; then
+  echo "TZ contains unsupported characters." >&2
   exit 1
 fi
 

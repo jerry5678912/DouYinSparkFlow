@@ -26,6 +26,43 @@ class SecurityHardeningTests(unittest.TestCase):
         self.assertIn("wz.json", ignored_patterns)
         self.assertIn("gsy.json", ignored_patterns)
 
+    def test_configuration_generator_is_documented_as_local_only(self):
+        instructions = (
+            REPOSITORY_ROOT / "docs" / "配置生成器使用.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("http://127.0.0.1:8765/", instructions)
+        self.assertNotIn("oilu.cn", instructions)
+
+    def test_runtime_has_no_unused_openai_integration(self):
+        tasks_source = (REPOSITORY_ROOT / "core" / "tasks.py").read_text(
+            encoding="utf-8"
+        )
+        message_builder_source = (
+            REPOSITORY_ROOT / "core" / "msg_builder.py"
+        ).read_text(encoding="utf-8")
+        requirements = (REPOSITORY_ROOT / "requirements.txt").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertNotIn("build_message_with_openai", tasks_source)
+        self.assertNotIn("build_message_with_openai", message_builder_source)
+        self.assertNotIn("openai==", requirements)
+
+    def test_container_runs_as_non_root_user(self):
+        dockerfile = (REPOSITORY_ROOT / "Dockerfile").read_text(encoding="utf-8")
+
+        self.assertIn("USER pwuser", dockerfile)
+
+    def test_legacy_cron_helper_does_not_copy_the_whole_environment(self):
+        entrypoint = (REPOSITORY_ROOT / "docker" / "entrypoint.sh").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertNotIn("merged_vars", entrypoint)
+        self.assertIn("chmod 0600 /etc/douyin-spark-flow.env", entrypoint)
+        self.assertIn("must be an integer", entrypoint)
+
 
 if __name__ == "__main__":
     unittest.main()

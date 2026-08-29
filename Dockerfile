@@ -5,10 +5,13 @@ WORKDIR /app
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
-COPY . /app
+COPY --chown=pwuser:pwuser . /app
 
 # Cloud Run Jobs should run headlessly and exit when the task is complete.
 ENV GITHUB_ACTIONS=true \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    HOME=/home/pwuser
+
+USER pwuser
 
 ENTRYPOINT ["python", "main.py"]
