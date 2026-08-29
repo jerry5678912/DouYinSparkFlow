@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 import unittest
 
 
@@ -75,6 +76,32 @@ class SecurityHardeningTests(unittest.TestCase):
         self.assertNotIn("消息模板:", tasks_source)
         self.assertNotIn("目标好友: {user['targets']}", tasks_source)
         self.assertNotIn("开始处理账号 {username}", tasks_source)
+
+    def test_build_inputs_are_immutable_and_hash_verified(self):
+        dockerfile = (REPOSITORY_ROOT / "Dockerfile").read_text(encoding="utf-8")
+        workflow = (
+            REPOSITORY_ROOT / ".github" / "workflows" / "docker-publish.yml"
+        ).read_text(encoding="utf-8")
+        requirements = (REPOSITORY_ROOT / "requirements.txt").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("@sha256:", dockerfile.splitlines()[0])
+        self.assertIn("pip install --no-cache-dir --require-hashes", dockerfile)
+        action_lines = [line.strip() for line in workflow.splitlines() if "uses:" in line]
+        self.assertTrue(action_lines)
+        self.assertTrue(
+            all(re.fullmatch(r"uses: [^@]+@[0-9a-f]{40}  # v\d+", line) for line in action_lines)
+        )
+        package_starts = [
+            index for index, line in enumerate(requirements.splitlines())
+            if "==" in line and not line.startswith("    ")
+        ]
+        self.assertTrue(package_starts)
+        lines = requirements.splitlines()
+        for position, start in enumerate(package_starts):
+            end = package_starts[position + 1] if position + 1 < len(package_starts) else len(lines)
+            self.assertIn("--hash=sha256:", "\n".join(lines[start:end]))
 
 
 if __name__ == "__main__":
